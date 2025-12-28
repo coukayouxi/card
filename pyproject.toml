@@ -1,0 +1,9 @@
+[project]
+name = "card_game"
+version = "v1.1.1"
+description = "Python斗地主游戏。"
+
+[[tool.uv.index]]
+name = "aliyun"
+url = "https://mirrors.aliyun.com/pypi/simple/"
+#url = "http://mirrors.cloud.aliyuncs.com/pypi/simple/" # 内网

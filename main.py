@@ -4,19 +4,30 @@ import pygame
 import random
 import time
 import math
+import json
+import os
 from logic_card import *
-# ---------------------- release常量 ----------------------
-RELEASE = True
+import sys
 
-def print(*values: object,
-    sep: str | None = " ",
-    end: str | None = "\n",
-    file = None,
-    flush = False,
-) -> None:
-    if RELEASE: return
-    print(*values, sep=sep, end=end, file=file, flush=flush)
+# ---------------------- 统计数据文件路径 ----------------------
+# 使用用户的主目录存储数据
+try:
+    from pathlib import Path
+    DATA_DIR = Path.home() / "card"
+except ImportError:
+    import os
+    DATA_DIR = os.path.join(os.path.expanduser("~"), "card")
 
+DATA_FILE = os.path.join(DATA_DIR, "data.json")
+# 获取可执行文件所在目录
+EXE_DIR = os.path.dirname(sys.executable)
+RELEASE = '__compiled__' in globals()
+def file_path(filename):
+    """获取可执行文件所在目录的指定文件路径"""
+    if RELEASE:
+        return os.path.join(EXE_DIR, filename)
+    return filename
+    
 # ---------------------- 界面常量定义 ----------------------
 # 窗口常量
 WINDOW_WIDTH = 1200
@@ -121,7 +132,7 @@ class LandlordGamePygame:
         self.ai2_cards = []  # AI2手牌（上方农民）
         self.landlord_cards = []  # 地主底牌
         self.landlord = -1  # -1-未确定，0-玩家，1-AI1，2-AI2
-        self.game_state = "shuffling"  # shuffling/dealing/calling/playing/over
+        self.game_state = "menu"  # menu/tutorial/shuffling/dealing/calling/playing/over
         self.last_play = {
             "player": "", "cards": [], "type": "", 
             "priority": 0, "count": 0
@@ -148,14 +159,25 @@ class LandlordGamePygame:
             "call": pygame.Rect(HALF_W - 200, BUTTON_Y, BUTTON_WIDTH, BUTTON_HEIGHT),
             "giveup_call": pygame.Rect(HALF_W - 60, BUTTON_Y, BUTTON_WIDTH, BUTTON_HEIGHT),
             "play": pygame.Rect(HALF_W + 80, BUTTON_Y, BUTTON_WIDTH, BUTTON_HEIGHT),
-            "giveup_play": pygame.Rect(HALF_W + 220, BUTTON_Y, BUTTON_WIDTH, BUTTON_HEIGHT)
+            "giveup_play": pygame.Rect(HALF_W + 220, BUTTON_Y, BUTTON_WIDTH, BUTTON_HEIGHT),
+            # 主菜单按钮
+            "menu_ai_battle": pygame.Rect(HALF_W - BUTTON_WIDTH // 2, HALF_H - 50, BUTTON_WIDTH, BUTTON_HEIGHT),
+            "menu_tutorial": pygame.Rect(HALF_W - BUTTON_WIDTH // 2, HALF_H + 30, BUTTON_WIDTH, BUTTON_HEIGHT),
+            "menu_stats": pygame.Rect(HALF_W - BUTTON_WIDTH // 2, HALF_H + 110, BUTTON_WIDTH, BUTTON_HEIGHT),
+            "menu_back": pygame.Rect(HALF_W - BUTTON_WIDTH // 2, WINDOW_HEIGHT - 100, BUTTON_WIDTH, BUTTON_HEIGHT),
+            "stats_back": pygame.Rect(HALF_W - BUTTON_WIDTH // 2, WINDOW_HEIGHT - 100, BUTTON_WIDTH, BUTTON_HEIGHT),
+            # 游戏结束按钮
+            "game_over_menu": pygame.Rect(HALF_W - 130, HALF_H + 50, BUTTON_WIDTH, BUTTON_HEIGHT),
+            "game_over_continue": pygame.Rect(HALF_W + 10, HALF_H + 50, BUTTON_WIDTH, BUTTON_HEIGHT)
         }
         
-        # 加载卡牌图片（在初始化游戏之前）
-        self.card_images = self.load_card_images()
+        # 游戏结束状态变量
+        self.game_over_winner = ""  # 记录获胜者
         
-        # 初始化游戏
-        self.init_game()
+        # 统计数据
+        self.stats = self.load_stats()
+        
+        # 不再自动初始化游戏，等待用户从菜单选择
     
     def load_chinese_font(self, font_size, bold=False):
         """加载多系统兼容的中文字体（带缓存，避免重复加载导致卡顿）"""
@@ -166,7 +188,7 @@ class LandlordGamePygame:
         
         # 优先使用当前目录下的fonts.ttf字体
         try:
-            font = pygame.font.Font("fonts.ttf", font_size)
+            font = pygame.font.Font(file_path("fonts.ttf"), font_size)
             self.font_cache[cache_key] = font
             return font
         except (pygame.error, FileNotFoundError):
@@ -191,9 +213,59 @@ class LandlordGamePygame:
         self.font_cache[cache_key] = font
         return font
     
-    def load_card_images(self):
-        """不再加载图片，使用纯文字绘制卡牌"""
-        return {}
+    def load_stats(self):
+        """加载统计数据"""
+        # 创建数据目录（如果不存在）
+        try:
+            os.makedirs(DATA_DIR, exist_ok=True)
+        except (OSError, PermissionError) as e:
+            print(f"无法创建数据目录：{e}")
+        
+        # 默认统计数据
+        default_stats = {
+            "total_games": 0,      # 总游戏局数
+            "wins": 0,              # 玩家胜利局数
+            "losses": 0,            # 玩家失败局数
+            "call_landlord_count": 0  # 玩家叫地主次数
+        }
+        
+        # 尝试从文件加载
+        try:
+            if os.path.exists(DATA_FILE):
+                with open(DATA_FILE, 'r', encoding='utf-8') as f:
+                    stats = json.load(f)
+                # 确保所有字段都存在
+                for key in default_stats:
+                    if key not in stats:
+                        stats[key] = default_stats[key]
+                return stats
+        except (json.JSONDecodeError, IOError, PermissionError) as e:
+            print(f"加载统计数据失败，使用默认值：{e}")
+        
+        return default_stats.copy()
+    
+    def save_stats(self):
+        """保存统计数据"""
+        try:
+            with open(DATA_FILE, 'w', encoding='utf-8') as f:
+                json.dump(self.stats, f, ensure_ascii=False, indent=2)
+        except (IOError, PermissionError) as e:
+            print(f"保存统计数据失败：{e}")
+    
+    def update_stats(self, event_type):
+        """更新统计数据
+        event_type: "game_start", "win", "lose", "call_landlord"
+        """
+        if event_type == "game_start":
+            self.stats["total_games"] += 1
+        elif event_type == "win":
+            self.stats["wins"] += 1
+        elif event_type == "lose":
+            self.stats["losses"] += 1
+        elif event_type == "call_landlord":
+            self.stats["call_landlord_count"] += 1
+        
+        self.save_stats()
 
     def draw_card_text(self, x, y, width, height, card):
         """绘制卡牌文字（自适应字体大小，区分花色颜色）"""
@@ -733,8 +805,202 @@ class LandlordGamePygame:
             landlord_text = "你" if self.landlord == 0 else f"AI{self.landlord}"
             current_turn = "玩家" if self.last_play["player"] != "玩家" else "AI"
             return self.large_font.render(f"{landlord_text}是地主，当前回合：{current_turn}", True, COLOR_YELLOW)
+        elif self.game_state == "game_over":
+            return self.large_font.render("游戏结束", True, COLOR_RED)
         else:
             return self.large_font.render("游戏结束，即将重新开始...", True, COLOR_GREEN)
+
+    def draw_main_menu(self):
+        """绘制主菜单界面"""
+        # 绘制标题
+        title_text = "斗地主"
+        title_surf = self.large_font.render(title_text, True, COLOR_RED)
+        title_x = HALF_W - title_surf.get_width() // 2
+        title_y = HALF_H - 200
+        
+        # 绘制标题阴影
+        title_shadow_surf = self.large_font.render(title_text, True, COLOR_GRAY)
+        self.screen.blit(title_shadow_surf, (title_x + 2, title_y + 2))
+        self.screen.blit(title_surf, (title_x, title_y))
+        
+        # 绘制装饰性卡牌
+        self.draw_menu_cards()
+        
+        # 绘制按钮
+        mouse_pos = pygame.mouse.get_pos()
+        
+        # AI对战按钮
+        ai_hover = self.buttons["menu_ai_battle"].collidepoint(mouse_pos)
+        ai_color = BUTTON_GREEN_HOVER if ai_hover else BUTTON_GREEN
+        draw_rounded_rect(self.screen, COLOR_GRAY, (self.buttons["menu_ai_battle"].x+2, self.buttons["menu_ai_battle"].y+2, 
+                                                    BUTTON_WIDTH, BUTTON_HEIGHT), BUTTON_ROUND)
+        draw_rounded_rect(self.screen, ai_color, self.buttons["menu_ai_battle"], BUTTON_ROUND)
+        draw_text_with_shadow(self.screen, self.font, "AI对战", COLOR_WHITE, 
+                              (self.buttons["menu_ai_battle"].x + 25, self.buttons["menu_ai_battle"].y + 10))
+        
+        # 玩法介绍按钮
+        tutorial_hover = self.buttons["menu_tutorial"].collidepoint(mouse_pos)
+        tutorial_color = BUTTON_GREEN_HOVER if tutorial_hover else BUTTON_GREEN
+        draw_rounded_rect(self.screen, COLOR_GRAY, (self.buttons["menu_tutorial"].x+2, self.buttons["menu_tutorial"].y+2, 
+                                                        BUTTON_WIDTH, BUTTON_HEIGHT), BUTTON_ROUND)
+        draw_rounded_rect(self.screen, tutorial_color, self.buttons["menu_tutorial"], BUTTON_ROUND)
+        draw_text_with_shadow(self.screen, self.font, "玩法介绍", COLOR_WHITE, 
+                              (self.buttons["menu_tutorial"].x + 25, self.buttons["menu_tutorial"].y + 10))
+        
+        # 统计按钮
+        stats_hover = self.buttons["menu_stats"].collidepoint(mouse_pos)
+        stats_color = BUTTON_GREEN_HOVER if stats_hover else BUTTON_GREEN
+        draw_rounded_rect(self.screen, COLOR_GRAY, (self.buttons["menu_stats"].x+2, self.buttons["menu_stats"].y+2, 
+                                                        BUTTON_WIDTH, BUTTON_HEIGHT), BUTTON_ROUND)
+        draw_rounded_rect(self.screen, stats_color, self.buttons["menu_stats"], BUTTON_ROUND)
+        draw_text_with_shadow(self.screen, self.font, "统计", COLOR_WHITE, 
+                              (self.buttons["menu_stats"].x + 35, self.buttons["menu_stats"].y + 10))
+    
+    def draw_stats_screen(self):
+        """绘制统计界面"""
+        # 绘制标题
+        title_text = "游戏统计"
+        title_surf = self.large_font.render(title_text, True, COLOR_RED)
+        title_x = HALF_W - title_surf.get_width() // 2
+        title_y = 50
+        
+        draw_text_with_shadow(self.screen, self.large_font, title_text, COLOR_RED, (title_x, title_y))
+        
+        # 绘制统计内容
+        stats_data = [
+            ("总游戏局数：", self.stats["total_games"]),
+            ("玩家胜利局数：", self.stats["wins"]),
+            ("玩家失败局数：", self.stats["losses"]),
+            ("叫地主次数：", self.stats["call_landlord_count"]),
+        ]
+        
+        # 计算胜率
+        total_played = self.stats["wins"] + self.stats["losses"]
+        if total_played > 0:
+            win_rate = (self.stats["wins"] / total_played) * 100
+        else:
+            win_rate = 0.0
+        
+        stats_data.append(("胜率：", f"{win_rate:.1f}%"))
+        
+        y = 120
+        line_height = 40
+        
+        for label, value in stats_data:
+            # 绘制标签
+            label_surf = self.font.render(label, True, COLOR_BLACK)
+            self.screen.blit(label_surf, (300, y))
+            
+            # 绘制数值
+            value_surf = self.large_font.render(str(value), True, COLOR_BLUE)
+            self.screen.blit(value_surf, (500, y))
+            
+            y += line_height
+        
+        # 绘制返回按钮
+        mouse_pos = pygame.mouse.get_pos()
+        back_hover = self.buttons["stats_back"].collidepoint(mouse_pos)
+        back_color = BUTTON_RED_HOVER if back_hover else BUTTON_RED
+        draw_rounded_rect(self.screen, COLOR_GRAY, (self.buttons["stats_back"].x+2, self.buttons["stats_back"].y+2, 
+                                                    BUTTON_WIDTH, BUTTON_HEIGHT), BUTTON_ROUND)
+        draw_rounded_rect(self.screen, back_color, self.buttons["stats_back"], BUTTON_ROUND)
+        draw_text_with_shadow(self.screen, self.font, "返回主菜单", COLOR_WHITE, 
+                              (self.buttons["stats_back"].x + 5, self.buttons["stats_back"].y + 10))
+
+    def draw_menu_cards(self):
+        """在主菜单绘制装饰性卡牌"""
+        card_positions = [
+            (HALF_W - 150, HALF_H - 80),
+            (HALF_W - 80, HALF_H - 100),
+            (HALF_W, HALF_H - 80),
+            (HALF_W + 80, HALF_H - 100),
+            (HALF_W + 150, HALF_H - 80)
+        ]
+        
+        suits = ['♠', '♥', '♣', '♦']
+        ranks = ['K', 'Q', 'J']
+        
+        for i, (x, y) in enumerate(card_positions):
+            suit = suits[i % 4]
+            rank = ranks[i % 3]
+            card = f"{suit}{rank}"
+            color = COLOR_RED if suit in ['♥', '♦'] else COLOR_BLACK
+            
+            # 绘制小号卡牌
+            card_w = 40
+            card_h = 56
+            draw_rounded_rect(self.screen, COLOR_WHITE, (x, y, card_w, card_h), 5)
+            
+            # 绘制卡牌文字
+            font_size = 20
+            card_font = self.load_chinese_font(font_size, bold=True)
+            suit_surf = card_font.render(suit, True, color)
+            rank_surf = card_font.render(rank, True, color)
+            
+            self.screen.blit(suit_surf, (x + 3, y + 3))
+            self.screen.blit(rank_surf, (x + card_w - rank_surf.get_width() - 3, y + card_h - rank_surf.get_height() - 3))
+            
+            pygame.draw.rect(self.screen, CARD_BORDER, (x, y, card_w, card_h), 1, border_radius=5)
+
+    def draw_tutorial(self):
+        """绘制玩法介绍界面"""
+        # 绘制标题
+        title_text = "斗地主玩法介绍"
+        title_surf = self.large_font.render(title_text, True, COLOR_RED)
+        title_x = HALF_W - title_surf.get_width() // 2
+        title_y = 50
+        
+        draw_text_with_shadow(self.screen, self.large_font, title_text, COLOR_RED, (title_x, title_y))
+        
+        # 绘制内容区域
+        content_lines = [
+            "【基本规则】",
+            "• 3人游戏，54张牌（含大小王）",
+            "• 每人发17张牌，留3张底牌",
+            "• 叫地主决定谁获得底牌",
+            "• 地主先出牌，其他两人为农民",
+            "",
+            "【牌型说明】",
+            "• 单张：任意一张牌",
+            "• 对子：两张相同点数的牌",
+            "• 三张：三张相同点数的牌",
+            "• 顺子：五张或以上连续单牌（不含2和王）",
+            "• 连对：三对或以上连续对子（不含2和王）",
+            "• 飞机：两组或以上连续三张（可带翼）",
+            "• 炸弹：四张相同点数的牌",
+            "• 王炸：大王+小王",
+            "",
+            "【压制规则】",
+            "• 王炸可压一切",
+            "• 炸弹可压所有普通牌型",
+            "• 相同牌型比较大小（顺子需长度相同）",
+            "• 不能出的牌可以选择过牌"
+        ]
+        
+        y = 100
+        line_height = 30
+        
+        for line in content_lines:
+            if line.startswith("【"):
+                color = COLOR_BLUE
+                font = self.large_font
+            else:
+                color = COLOR_BLACK
+                font = self.font
+            
+            line_surf = font.render(line, True, color)
+            self.screen.blit(line_surf, (50, y))
+            y += line_height
+        
+        # 绘制返回按钮
+        mouse_pos = pygame.mouse.get_pos()
+        back_hover = self.buttons["menu_back"].collidepoint(mouse_pos)
+        back_color = BUTTON_RED_HOVER if back_hover else BUTTON_RED
+        draw_rounded_rect(self.screen, COLOR_GRAY, (self.buttons["menu_back"].x+2, self.buttons["menu_back"].y+2, 
+                                                    BUTTON_WIDTH, BUTTON_HEIGHT), BUTTON_ROUND)
+        draw_rounded_rect(self.screen, back_color, self.buttons["menu_back"], BUTTON_ROUND)
+        draw_text_with_shadow(self.screen, self.font, "返回主菜单", COLOR_WHITE, 
+                              (self.buttons["menu_back"].x + 5, self.buttons["menu_back"].y + 10))
 
     def draw_ai_hand(self, ai_id, title_x, title_y, card_start_x, card_y):
         """绘制AI手牌（背面显示+美化）"""
@@ -835,7 +1101,7 @@ class LandlordGamePygame:
         """绘制玩家手牌（美化+选中动画）"""
         self.player_card_rects.clear()
         # 修正：定义原始文本字符串
-        player_title_text = "你的手牌（点击选中，绿色边框+抬高）"
+        player_title_text = "你的手牌"
         player_title = self.font.render(player_title_text, True, COLOR_BLUE)
         text_x = HALF_W - self.font.size(player_title_text)[0] // 2
         draw_text_with_shadow(self.screen, self.font, player_title_text, COLOR_BLUE, 
@@ -896,6 +1162,68 @@ class LandlordGamePygame:
             draw_rounded_rect(self.screen, giveup_play_color, self.buttons["giveup_play"], BUTTON_ROUND)
             draw_text_with_shadow(self.screen, self.font, "过", COLOR_WHITE, 
                                   (self.buttons["giveup_play"].x + 50, self.buttons["giveup_play"].y + 10))
+    
+    def draw_game_over(self):
+        """绘制游戏结束界面"""
+        # 绘制半透明背景遮罩
+        overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT))
+        overlay.fill((0, 0, 0))
+        overlay.set_alpha(150)
+        self.screen.blit(overlay, (0, 0))
+        
+        # 绘制结果框
+        result_box = pygame.Rect(HALF_W - 250, HALF_H - 150, 500, 350)
+        draw_rounded_rect(self.screen, COLOR_WHITE, result_box, 20)
+        pygame.draw.rect(self.screen, COLOR_BLACK, result_box, 3, border_radius=20)
+        
+        # 判断玩家是赢了还是输了
+        player_won = (self.game_over_winner == "玩家")
+        
+        # 显示获胜信息
+        if player_won:
+            result_text = "恭喜！你赢了！"
+            result_color = COLOR_GREEN
+        else:
+            result_text = f"{self.game_over_winner} 获得胜利！"
+            result_color = COLOR_RED
+        
+        # 绘制结果文字
+        result_surf = self.large_font.render(result_text, True, result_color)
+        result_x = HALF_W - result_surf.get_width() // 2
+        result_y = HALF_H - 100
+        draw_text_with_shadow(self.screen, self.large_font, result_text, result_color, (result_x, result_y))
+        
+        # 显示详细信息
+        if player_won:
+            detail_text = "你成功出完了所有手牌！"
+        else:
+            detail_text = "很遗憾，下次继续加油！"
+        
+        detail_surf = self.font.render(detail_text, True, COLOR_BLACK)
+        detail_x = HALF_W - detail_surf.get_width() // 2
+        detail_y = HALF_H - 40
+        draw_text_with_shadow(self.screen, self.font, detail_text, COLOR_BLACK, (detail_x, detail_y))
+        
+        # 绘制按钮
+        mouse_pos = pygame.mouse.get_pos()
+        
+        # 返回主菜单按钮
+        menu_hover = self.buttons["game_over_menu"].collidepoint(mouse_pos)
+        menu_color = BUTTON_RED_HOVER if menu_hover else BUTTON_RED
+        draw_rounded_rect(self.screen, COLOR_GRAY, (self.buttons["game_over_menu"].x+2, self.buttons["game_over_menu"].y+2, 
+                                                    BUTTON_WIDTH, BUTTON_HEIGHT), BUTTON_ROUND)
+        draw_rounded_rect(self.screen, menu_color, self.buttons["game_over_menu"], BUTTON_ROUND)
+        draw_text_with_shadow(self.screen, self.font, "返回主菜单", COLOR_WHITE, 
+                              (self.buttons["game_over_menu"].x + 5, self.buttons["game_over_menu"].y + 10))
+        
+        # 继续玩按钮
+        continue_hover = self.buttons["game_over_continue"].collidepoint(mouse_pos)
+        continue_color = BUTTON_GREEN_HOVER if continue_hover else BUTTON_GREEN
+        draw_rounded_rect(self.screen, COLOR_GRAY, (self.buttons["game_over_continue"].x+2, self.buttons["game_over_continue"].y+2, 
+                                                    BUTTON_WIDTH, BUTTON_HEIGHT), BUTTON_ROUND)
+        draw_rounded_rect(self.screen, continue_color, self.buttons["game_over_continue"], BUTTON_ROUND)
+        draw_text_with_shadow(self.screen, self.font, "继续玩", COLOR_WHITE, 
+                              (self.buttons["game_over_continue"].x + 40, self.buttons["game_over_continue"].y + 10))
 
     # ---------------------- 核心修正：AI出牌逻辑（解决炸弹压制+主动过牌）----------------------
     def get_ai_legal_plays(self, ai_cards):
@@ -1123,6 +1451,9 @@ class LandlordGamePygame:
     def player_call_landlord(self):
         """玩家叫地主"""
         self.landlord = 0
+        # 更新统计：玩家叫地主
+        self.update_stats("call_landlord")
+        
         # 底牌并入动画
         self.animate_landlord_cards_to_hand(0)
         # 底牌并入手牌
@@ -1219,18 +1550,25 @@ class LandlordGamePygame:
         """检查是否有玩家获胜"""
         # 玩家获胜
         if not self.player_cards:
-            self.show_ai_notice("恭喜你！获得游戏胜利！")
-            self.reset_game()
+            self.game_over_winner = "玩家"
+            self.game_state = "game_over"
+            self.update_stats("win")
             return True
         # AI1获胜
         elif not self.ai1_cards:
-            self.show_ai_notice("AI农民1获得游戏胜利！")
-            self.reset_game()
+            self.game_over_winner = "AI农民1"
+            # 如果玩家不是地主，玩家输了
+            if self.landlord != 0:
+                self.update_stats("lose")
+            self.game_state = "game_over"
             return True
         # AI2获胜
         elif not self.ai2_cards:
-            self.show_ai_notice("AI农民2获得游戏胜利！")
-            self.reset_game()
+            self.game_over_winner = "AI农民2"
+            # 如果玩家不是地主，玩家输了
+            if self.landlord != 0:
+                self.update_stats("lose")
+            self.game_state = "game_over"
             return True
         return False
 
@@ -1258,6 +1596,9 @@ class LandlordGamePygame:
     
     def init_game(self):
         """初始化游戏流程（洗牌+发牌）"""
+        # 更新统计：开始新游戏
+        self.update_stats("game_start")
+        
         self.shuffle_deck()
         self.game_state = "dealing"
         self.deal_cards()
@@ -1275,23 +1616,68 @@ class LandlordGamePygame:
                     running = False
                 elif event.type == pygame.MOUSEBUTTONDOWN:
                     mouse_pos = pygame.mouse.get_pos()
-                    # 先检测卡牌点击
-                    self.check_card_click(mouse_pos)
                     
-                    # 再检测按钮点击
-                    if self.game_state == "calling":
-                        if self.buttons["call"].collidepoint(mouse_pos):
-                            self.player_call_landlord()
-                        elif self.buttons["giveup_call"].collidepoint(mouse_pos):
-                            self.player_giveup_landlord()
-                    elif self.game_state == "playing" and self.last_play["player"] != "玩家":
-                        if self.buttons["play"].collidepoint(mouse_pos):
-                            self.player_play_card()
-                        elif self.buttons["giveup_play"].collidepoint(mouse_pos):
-                            self.player_giveup_card()
+                    # 主菜单状态
+                    if self.game_state == "menu":
+                        if self.buttons["menu_ai_battle"].collidepoint(mouse_pos):
+                            self.game_state = "shuffling"
+                            self.init_game()
+                        elif self.buttons["menu_tutorial"].collidepoint(mouse_pos):
+                            self.game_state = "tutorial"
+                        elif self.buttons["menu_stats"].collidepoint(mouse_pos):
+                            self.game_state = "stats"
+                    
+                    # 统计状态
+                    elif self.game_state == "stats":
+                        if self.buttons["stats_back"].collidepoint(mouse_pos):
+                            self.game_state = "menu"
+                    
+                    # 玩法介绍状态
+                    elif self.game_state == "tutorial":
+                        if self.buttons["menu_back"].collidepoint(mouse_pos):
+                            self.game_state = "menu"
+                    
+                    # 游戏结束状态
+                    elif self.game_state == "game_over":
+                        if self.buttons["game_over_menu"].collidepoint(mouse_pos):
+                            # 返回主菜单
+                            self.game_state = "menu"
+                        elif self.buttons["game_over_continue"].collidepoint(mouse_pos):
+                            # 继续玩，重新开始游戏
+                            self.reset_game()
+                    
+                    # 游戏状态
+                    else:
+                        # 先检测卡牌点击
+                        self.check_card_click(mouse_pos)
+                        
+                        # 再检测按钮点击
+                        if self.game_state == "calling":
+                            if self.buttons["call"].collidepoint(mouse_pos):
+                                self.player_call_landlord()
+                            elif self.buttons["giveup_call"].collidepoint(mouse_pos):
+                                self.player_giveup_landlord()
+                        elif self.game_state == "playing" and self.last_play["player"] != "玩家":
+                            if self.buttons["play"].collidepoint(mouse_pos):
+                                self.player_play_card()
+                            elif self.buttons["giveup_play"].collidepoint(mouse_pos):
+                                self.player_giveup_card()
             
-            # 绘制界面（非洗牌/结束状态）
-            if self.game_state not in ["shuffling", "over"]:
+            # 绘制界面
+            if self.game_state == "menu":
+                self.screen.fill(COLOR_LIGHT_GRAY)
+                self.draw_main_menu()
+            elif self.game_state == "tutorial":
+                self.screen.fill(COLOR_LIGHT_GRAY)
+                self.draw_tutorial()
+            elif self.game_state == "stats":
+                self.screen.fill(COLOR_LIGHT_GRAY)
+                self.draw_stats_screen()
+            elif self.game_state == "game_over":
+                # 绘制游戏结束界面（覆盖在游戏界面上）
+                self.draw_interface()
+                self.draw_game_over()
+            elif self.game_state not in ["shuffling", "dealing"]:
                 self.draw_interface()
             
             # 更新显示
@@ -1302,6 +1688,5 @@ class LandlordGamePygame:
 
 # ---------------------- 运行游戏 ----------------------
 if __name__ == "__main__":
-    # 安装pygame命令：pip install pygame
     game = LandlordGamePygame()
     game.run()

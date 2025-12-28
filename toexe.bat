@@ -1,0 +1,1 @@
+nuitka --standalone --onefile --include-module=logic_card --include-data-files=fonts.ttf=fonts.ttf --windows-console-mode=disable --windows-file-version=1.2.0.0 --windows-file-description="斗地主游戏" main.py
